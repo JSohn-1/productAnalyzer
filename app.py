@@ -2,7 +2,7 @@ import streamlit as st
 import time
 
 # --- Setup Page Config ---
-st.set_page_config(page_title="Circular Economy Scout", page_icon="🌱", layout="wide")
+st.set_page_config(page_title="Sustainable Products", layout="wide")
 
 # --- Load Custom CSS ---
 def load_css():
@@ -15,7 +15,7 @@ def load_css():
 load_css()
 
 # --- Page Header ---
-st.title("🌱 The Circular Economy Scout")
+st.title("Sustainable Products Finder")
 st.markdown("<div class='subtitle'>ASI:One Intelligent Orchestrator</div>", unsafe_allow_html=True)
 
 # --- State Management ---
@@ -58,13 +58,13 @@ with col_dash:
     elif st.session_state.workflow_status == "searching":
         with st.status("Executing Browser Use Protocol...", expanded=True) as status:
             time.sleep(0.5)
-            st.write("🔍 **Parsing Intent:** Product - 4K Monitor, Max Price - $200, Sustainability - High Priority")
+            st.write("**Parsing Intent:** Product - 4K Monitor, Max Price - $200, Sustainability - High Priority")
             time.sleep(1.2)
-            st.write("🕷️ **Initializing Browser Use:** Launching headless browser session...")
+            st.write("**Initializing Browser Use:** Launching headless browser session...")
             time.sleep(1.5)
-            st.write("🖥️ **Navigating & Scraping:** Searching Craigslist, Facebook Marketplace, and querying local directories for Small Business IT shops...")
+            st.write("**Navigating & Scraping:** Searching Craigslist, Facebook Marketplace, and querying local directories for Small Business IT shops...")
             time.sleep(2.0)
-            st.write("🌿 **Evaluating Items:** Ranking scraped results by Carbon Saved, Local Economic Impact, and Price.")
+            st.write("**Evaluating Items:** Ranking scraped results by Carbon Saved, Local Economic Impact, and Price.")
             time.sleep(1.0)
             status.update(label="Items Located. Finalizing Discovery Phase...", state="complete", expanded=False)
         
@@ -78,23 +78,23 @@ with col_dash:
             <div class="glass" style="margin-bottom: 20px;">
                 <div class="carbon-badge" style="background: linear-gradient(135deg, #1f6feb 0%, #388bfd 100%);">🏢 Local SMB Supported</div>
                 <div class="product-title">Dell UltraSharp 27" 4K (Open Box)</div>
-                <div class="product-detail">📍 Location: "Bob's Main Street Electronics" (2.5 miles away)</div>
-                <div class="product-detail">🌐 Source: Local Business Directory (Found via Browser Use)</div>
+                <div class="product-detail">Location: "Bob's Main Street Electronics" (2.5 miles away)</div>
+                <div class="product-detail">Source: Local Business Directory (Found via Browser Use)</div>
                 <div class="price">$205</div>
                 <button class="pay-button" style="background-color: #1f6feb; box-shadow: 0 4px 15px rgba(31, 111, 235, 0.3);">Call Store & Reserve</button>
             </div>
 
             <div class="glass" style="margin-bottom: 20px;">
-                <div class="carbon-badge">🍃 Carbon Saved: 85kg CO2</div>
+                <div class="carbon-badge">Carbon Saved: 85kg CO2</div>
                 <div class="product-title">Dell UltraSharp 27" 4K (Used / Refurbished)</div>
-                <div class="product-detail">📍 Location: 5 miles away (Low shipping carbon footprint)</div>
-                <div class="product-detail">🌐 Source: Craigslist (Found via Browser Use)</div>
+                <div class="product-detail">Location: 5 miles away (Low shipping carbon footprint)</div>
+                <div class="product-detail">Source: Craigslist (Found via Browser Use)</div>
                 <div class="price">$195</div>
                 <button class="pay-button">Navigate to Listing & Autobuy</button>
             </div>
             
             <div class="glass">
-                <div class="repair-banner">🛠️ Repair-First Suggestion</div>
+                <div class="repair-banner">Repair-First Suggestion</div>
                 <div class="product-title">Got a broken monitor?</div>
                 <div class="product-detail">Before buying a replacement, check if you can fix your current setup. Extend lifespan, save 100% Carbon.</div>
                 <div style="margin-top: 15px;">
