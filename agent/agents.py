@@ -1,6 +1,8 @@
 from datetime import datetime
 from uuid import uuid4
- 
+
+from dotenv import load_dotenv
+
 from openai import OpenAI
 from uagents import Context, Protocol, Agent
 from uagents_core.contrib.protocols.chat import (
@@ -10,8 +12,9 @@ from uagents_core.contrib.protocols.chat import (
     TextContent,
     chat_protocol_spec,
 )
- 
- 
+
+load_dotenv()
+
 ### Example Expert Assistant
  
 ## This chat example is a barebones example of how you can create a simple chat agent
@@ -28,7 +31,7 @@ client = OpenAI(
     base_url='https://api.asi1.ai/v1',
  
     # You can get an ASI:One api key by creating an account at https://asi1.ai/dashboard/api-keys
-    api_key='<YOUR-API-KEY>',
+    api_key=os.getenv("ASI_API_KEY"),
 )
  
 agent = Agent(
