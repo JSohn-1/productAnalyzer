@@ -59,6 +59,9 @@ class ProductResult(Model):
     repair_text: str = ""
     url: str = ""
     image_url: str = ""
+    sustainability_score: float = 0.0
+    price_score: float = 0.0
+    final_score: float = 0.0
 
 
 class SearchResponse(Model):
@@ -254,11 +257,82 @@ async def scrape_site(platform: str, start_url: str, product: str, location: str
 
 
 def _parse_json(raw: str) -> dict:
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw[raw.index("\n") + 1:]
-        raw = raw[:raw.rfind("```")]
-    return json.loads(raw)
+    cleaned = raw.strip()
+
+    # Handle fenced code blocks from LLM responses (```json ... ``` or ``` ... ```).
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, count=1, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned, count=1)
+        cleaned = cleaned.strip()
+
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Some responses include extra prose before/after JSON.
+        # Fall back to parsing the first JSON object present.
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if not match:
+            raise
+        return json.loads(match.group(0))
+
+
+def _extract_number(raw: str) -> float | None:
+    if not raw:
+        return None
+    match = re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", raw)
+    if not match:
+        return None
+    return float(match.group(0).replace(",", ""))
+
+
+def _compute_weighted_scores(results: list[dict], sustainability_weight: float = 0.6, price_weight: float = 0.4) -> list[dict]:
+    scored_candidates: list[dict] = []
+    repair_entries: list[dict] = []
+
+    for item in results:
+        if item.get("repair_suggestion"):
+            item["sustainability_score"] = 0.0
+            item["price_score"] = 0.0
+            item["final_score"] = 0.0
+            repair_entries.append(item)
+            continue
+        scored_candidates.append(item)
+
+    if not scored_candidates:
+        return repair_entries
+
+    carbon_values = [_extract_number(i.get("carbon_saved", "")) for i in scored_candidates]
+    price_values = [_extract_number(i.get("price", "")) for i in scored_candidates]
+
+    known_carbon = [v for v in carbon_values if v is not None]
+    known_prices = [v for v in price_values if v is not None]
+
+    carbon_min = min(known_carbon) if known_carbon else 0.0
+    carbon_max = max(known_carbon) if known_carbon else 0.0
+    price_min = min(known_prices) if known_prices else 0.0
+    price_max = max(known_prices) if known_prices else 0.0
+
+    for item, carbon, price in zip(scored_candidates, carbon_values, price_values):
+        if carbon is None or carbon_max == carbon_min:
+            sustainability_score = 0.0 if carbon is None else 1.0
+        else:
+            sustainability_score = (carbon - carbon_min) / (carbon_max - carbon_min)
+
+        if price is None or price_max == price_min:
+            price_score = 0.0 if price is None else 1.0
+        else:
+            price_score = (price_max - price) / (price_max - price_min)
+
+        final_score = (sustainability_weight * sustainability_score) + (price_weight * price_score)
+        item["sustainability_score"] = round(sustainability_score, 3)
+        item["price_score"] = round(price_score, 3)
+        item["final_score"] = round(final_score, 3)
+
+    scored_candidates.sort(
+        key=lambda i: (i.get("final_score", 0.0), i.get("sustainability_score", 0.0), i.get("price_score", 0.0)),
+        reverse=True,
+    )
+    return scored_candidates + repair_entries
 
 
 async def scrape_and_score(query: str) -> SearchResponse:
@@ -314,6 +388,8 @@ async def scrape_and_score(query: str) -> SearchResponse:
             max_tokens=1024,
         )
         data = _parse_json(r.choices[0].message.content)
+
+    data["results"] = _compute_weighted_scores(data.get("results", []))
 
     _orch_status["phase"] = "done"
     _orch_status["message"] = "Done"
