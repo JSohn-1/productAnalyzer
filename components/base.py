@@ -88,7 +88,7 @@ def run():
 
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+                st.markdown(msg["content"].replace("$", "&#36;"))
 
         with st.form("search_form", clear_on_submit=False):
             product = st.text_input("Product", placeholder="e.g. 4K monitor, bicycle, sofa")
@@ -121,7 +121,7 @@ def run():
         elif st.session_state.workflow_status == "searching":
             with st.status("Searching live listings via Browser Use...", expanded=True) as status:
                 st.write("**Generating search tasks** with ASI:One...")
-                st.write("**Scraping** eBay, Craigslist, and Facebook Marketplace in parallel (this takes ~1-2 min)...")
+                st.write("**Scraping** eBay, OfferUp, and Facebook Marketplace in parallel (this takes ~1-2 min)...")
                 data = search_products(st.session_state.pending_query)
 
                 if data is None:
