@@ -108,6 +108,7 @@ class ScrapedListing(PydanticBaseModel):
     price: str
     location: str
     url: str
+    image_url: str
 
 
 # --- Prompts ---
@@ -126,7 +127,7 @@ The task must instruct the browser to:
 4. Filter results to listings near "{location}" only
 5. Apply a max price filter if a budget was specified
 6. Open the FIRST listing in the results that has a valid URL and price
-7. Extract: exact title, listed price, seller location, and the direct URL of that listing page
+7. Extract: exact title, listed price, seller location, the url of the first image of the item, and the direct URL of that listing page
 8. Stop immediately as soon as you have extracted the data — do NOT open or check any other listings
 
 Do NOT browse multiple listings. Return as soon as you have a valid result from the first listing.
@@ -238,6 +239,7 @@ async def scrape_site(platform: str, start_url: str, product: str, location: str
                 "price": listing.price,
                 "location": listing.location,
                 "url": listing.url,
+                "image_url": listing.image_url,
                 "source": platform,
             }
             _partial_results.append(result)
