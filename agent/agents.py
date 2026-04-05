@@ -58,6 +58,7 @@ class ProductResult(Model):
     repair_suggestion: bool
     repair_text: str = ""
     url: str = ""
+    image_url: str = ""
 
 
 class SearchResponse(Model):
@@ -136,6 +137,7 @@ Return ONLY valid JSON (no markdown, no explanation):
       "location": "...",
       "source": "eBay",
       "url": "...",
+      "image_url": "...",
       "carbon_saved": "XXkg CO2 saved vs buying new",
       "is_local_business": false,
       "repair_suggestion": false,
