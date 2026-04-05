@@ -7,7 +7,8 @@ from datetime import datetime
 from typing import List
 from uuid import uuid4
 
-import httpx
+from carbon import _compute_weighted_scores
+
 from dotenv import load_dotenv
 from pydantic import BaseModel as PydanticBaseModel
 from openai import AsyncOpenAI
@@ -54,6 +55,7 @@ class ProductResult(Model):
     location: str
     source: str
     carbon_saved: str
+    final_score: str
     is_local_business: bool
     repair_suggestion: bool
     repair_text: str = ""
@@ -147,6 +149,9 @@ You are a sustainability scoring assistant. Given real scraped used/secondhand p
 
 User request: {query}
 
+**IMPORTANT:** Search the internet for the manufacturing carbon footprint of a typical {query}. Provide the estimate in kg CO2 and cite your sources.
+
+
 Scraped listings (JSON):
 {listings}
 
@@ -181,8 +186,9 @@ Return ONLY valid JSON (no markdown, no explanation):
 }}
 
 Rules:
+- Search the internet for the manufacturing carbon footprint of a typical {query}. Provide the estimate in kg CO2 and cite your sources.
 - Preserve title, price, location, and url exactly as scraped
-- Estimate carbon_saved: used electronics typically save 50-150kg CO2 vs buying new
+- Estimate carbon_saved: look online for information to make an accurate assesment for the carbon delta
 - Add exactly 1 repair_suggestion entry at the end with a real iFixit search URL
 """
 
@@ -324,6 +330,7 @@ async def scrape_and_score(query: str) -> SearchResponse:
 
     _orch_status["phase"] = "done"
     _orch_status["message"] = "Done"
+    data["results"] = _compute_weighted_scores(data["results"])
     return SearchResponse(
         results=[ProductResult(**item) for item in data["results"]],
         summary=data["summary"],

@@ -94,11 +94,13 @@ def render_results(results):
         else:
             carbon = item.get("carbon_saved", "")
             badge = f'<div class="carbon-badge">Carbon Saved: {carbon}</div>' if carbon else ""
+            score_badge = f'<div class="carbon-badge" style="background: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);">Sustainability Score: {item.get("final_score", "N/A")}</div>' if item.get("final_score") else ""
             link = f'href="{url}" target="_blank"' if url else ""
             img_tag = f'<div class="product-image"><img src="{img_url}" style="width: 100%; height: auto; max-height: 250px; object-fit: cover; border-radius: 8px; display: block;"></div>' if img_url else ""
             st.markdown(f'''
                 <div class="glass" style="margin-bottom: 20px;">
                     {badge}
+                    {score_badge}
                     {img_tag}
                     <div class="product-title">{item["title"]}</div>
                     <div class="product-detail">Location: {item["location"]}</div>
