@@ -61,7 +61,7 @@ def _compute_weighted_scores(
         item["sustainability_score"] = round(sustainability_score, 2)
         item["price_score"] = round(price_score, 2)
         item["locality_score"] = round(locality_score, 2)
-        item["final_score"] = str(round(final_score, 2) * 10)
+        item["final_score"] = str(round(final_score * 10, 2))
 
     scored_candidates.sort(
         key=lambda i: (i.get("final_score", 0.0), i.get("sustainability_score", 0.0), i.get("price_score", 0.0)),
