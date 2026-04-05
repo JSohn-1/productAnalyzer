@@ -109,7 +109,7 @@ def run():
 
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
-                st.markdown(msg["content"].replace("$", "&#36;"))
+                st.markdown(msg["content"])
 
         with st.form("search_form", clear_on_submit=False):
             product = st.text_input("Product", placeholder="e.g. 4K monitor, bicycle, sofa")
@@ -195,7 +195,6 @@ def run():
                         "content": "Could not connect to the agent. Please start it with `python agent/agents.py` and try again.",
                     })
                 else:
-                    st.write("**Scoring results** by carbon saved, locality, and price...")
                     status.update(label="Live listings found!", state="complete", expanded=False)
                     st.session_state.search_results = data.get("results", [])
                     st.session_state.workflow_status = "found"

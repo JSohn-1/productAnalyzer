@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -5,8 +6,8 @@ import re
 from datetime import datetime
 from typing import List
 from uuid import uuid4
-import asyncio
 
+import httpx
 from dotenv import load_dotenv
 from pydantic import BaseModel as PydanticBaseModel
 from openai import AsyncOpenAI
@@ -18,20 +19,15 @@ from uagents_core.contrib.protocols.chat import (
     TextContent,
     chat_protocol_spec,
 )
-from browser_use_sdk.v3 import AsyncBrowserUse
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# ASI:One — generates browser task prompts and scores results
 asi_client = AsyncOpenAI(
-    base_url='https://api.asi1.ai/v1',
+    base_url="https://api.asi1.ai/v1",
     api_key=os.getenv("ASI_API_KEY"),
 )
-
-# Browser Use — executes the tasks against real websites
-browser_client = AsyncBrowserUse(api_key=os.getenv("BROWSER_USE_API_KEY"))
 
 agent = Agent(
     name="sustainable-product-finder",
@@ -318,7 +314,7 @@ async def handle_rest_search(ctx: Context, req: SearchRequest) -> SearchResponse
         return SearchResponse(results=[], summary="Something went wrong. Please try again.")
 
 
-# --- Chat protocol (for Agentverse / DeltaV) ---
+# --- Chat protocol ---
 
 protocol = Protocol(spec=chat_protocol_spec)
 
