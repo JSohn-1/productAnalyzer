@@ -66,6 +66,7 @@ def search_in_background(query: str, container: dict):
 def render_results(results):
     for item in results:
         url = item.get("url", "")
+        img_url = item.get("img")
         if item.get("repair_suggestion"):
             st.markdown(f'''
                 <div class="glass">
@@ -92,9 +93,11 @@ def render_results(results):
             carbon = item.get("carbon_saved", "")
             badge = f'<div class="carbon-badge">Carbon Saved: {carbon}</div>' if carbon else ""
             link = f'href="{url}" target="_blank"' if url else ""
+            img_url = f'href="{img_url}" target="_blank"' if url else ""
             st.markdown(f'''
                 <div class="glass" style="margin-bottom: 20px;">
                     {badge}
+                    <div class="product-image"><img src={img_url}></div>
                     <div class="product-title">{item["title"]}</div>
                     <div class="product-detail">Location: {item["location"]}</div>
                     <div class="product-detail">Source: {item["source"]}</div>

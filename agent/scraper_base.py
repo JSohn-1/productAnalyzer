@@ -24,15 +24,17 @@ Product: {product}
 Location: {location}
 {price_clause}
 
-The task must instruct the browser to:
+The task must instruct the browser to efficently and as quickly as possible:
 1. Go to {start_url}
 2. Search for the product
 3. Filter for used or refurbished condition only
 4. Filter results to listings near "{location}" only
 5. Apply a max price filter if a budget was specified
 6. Open the FIRST listing in the results that has a valid URL and price
-7. Extract: exact title, listed price, seller location, and the direct URL of that listing page
+7. Extract: exact title, listed price, seller location, the image url of the cover item, and the direct URL of that listing page
 8. Stop immediately as soon as you have extracted the data — do NOT open or check any other listings
+
+Make no mistakes. Work faster. Work faster. Minimize actions.
 
 Do NOT browse multiple listings. Return as soon as you have a valid result from the first listing.
 
@@ -65,6 +67,7 @@ class ScrapeResponse(Model):
     price: str = ""
     location: str = ""
     url: str = ""
+    image_url: str = ""
     source: str = ""
     success: bool = False
     error_message: str = ""
@@ -80,6 +83,7 @@ class ScrapedListing(PydanticBaseModel):
     price: str
     location: str
     url: str
+    image_url: str
 
 
 async def scrape_site(
@@ -120,6 +124,7 @@ async def scrape_site(
                 "price": listing.price,
                 "location": listing.location,
                 "url": listing.url,
+                "image_url": listing.image_url
             }
         # Browser ran but returned no output — likely a login wall or block
         error_msg = f"{platform} page could not load — it may require login or has blocked access."

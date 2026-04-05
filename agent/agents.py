@@ -60,6 +60,7 @@ class ProductResult(Model):
     repair_suggestion: bool
     repair_text: str = ""
     url: str = ""
+    image_url: str = ""
 
 
 class SearchResponse(Model):
