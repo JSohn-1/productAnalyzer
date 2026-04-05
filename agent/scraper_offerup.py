@@ -27,11 +27,12 @@ async def handle_scrape(_ctx: Context, req: ScrapeRequest) -> ScrapeResponse:
     global _status
     _status = {"phase": "starting", "message": f"Starting {PLATFORM} scrape..."}
     result = await scrape_site(PLATFORM, START_URL, req.product, req.location, req.max_price, _status)
-    if result:
-        _status = {"phase": "done", "message": "Done"}
-        return ScrapeResponse(**result, source=PLATFORM, success=True)
-    _status = {"phase": "failed", "message": f"{PLATFORM} scrape failed"}
-    return ScrapeResponse(source=PLATFORM, success=False)
+    if "_error" in result:
+        error_msg = result["_error"]
+        _status["message"] = error_msg
+        return ScrapeResponse(source=PLATFORM, success=False, error_message=error_msg)
+    _status = {"phase": "done", "message": "Done"}
+    return ScrapeResponse(**result, source=PLATFORM, success=True)
 
 
 if __name__ == "__main__":

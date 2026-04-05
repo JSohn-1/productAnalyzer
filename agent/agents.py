@@ -73,6 +73,7 @@ class StatusResponse(Model):
     platforms_started: List[str]
     platforms_done: List[str]
     platforms_failed: List[str]
+    platform_errors: List[str]  # formatted as "Platform: error message"
 
 
 # Global orchestrator status — polled by the UI
@@ -82,6 +83,7 @@ _orch_status: dict = {
     "platforms_started": [],
     "platforms_done": [],
     "platforms_failed": [],
+    "platform_errors": [],
 }
 
 
@@ -182,9 +184,12 @@ async def call_scraper(
             _orch_status["platforms_done"].append(platform)
             return data
         _orch_status["platforms_failed"].append(platform)
+        error_msg = data.get("error_message") or f"{platform} page could not load."
+        _orch_status["platform_errors"].append(f"{platform}: {error_msg}")
     except Exception as e:
         logger.error(f"Scraper call failed [{platform}]: {type(e).__name__}: {e}")
         _orch_status["platforms_failed"].append(platform)
+        _orch_status["platform_errors"].append(f"{platform}: page could not load.")
     return None
 
 
@@ -196,6 +201,7 @@ async def orchestrate(query: str) -> SearchResponse:
         "platforms_started": list(SCRAPERS.keys()),
         "platforms_done": [],
         "platforms_failed": [],
+        "platform_errors": [],
     }
 
     price_match = re.search(r"\$(\d+)", query) or re.search(r"budget of \$?(\d+)", query)

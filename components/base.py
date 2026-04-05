@@ -177,13 +177,20 @@ def run():
                         for p, agent_msg in scraper_statuses.items():
                             if p in s.get("platforms_done", []):
                                 icon = "✅"
+                                rows.append(f"{icon} **{p}** — {agent_msg}")
                             elif p in s.get("platforms_failed", []):
                                 icon = "❌"
+                                # Find the specific error message for this platform
+                                error = next(
+                                    (e.split(": ", 1)[1] for e in s.get("platform_errors", []) if e.startswith(f"{p}:")),
+                                    agent_msg,
+                                )
+                                rows.append(f"{icon} **{p}** — {error}")
                             elif p in s.get("platforms_started", []):
                                 icon = "🔍"
+                                rows.append(f"{icon} **{p}** — {agent_msg}")
                             else:
-                                icon = "⏳"
-                            rows.append(f"{icon} **{p}** — {agent_msg}")
+                                rows.append(f"⏳ **{p}** — waiting...")
                         if rows:
                             platforms_placeholder.markdown("  \n".join(rows))
                     else:

@@ -40,6 +40,20 @@ Output ONLY the task instruction as plain text. No explanation, no JSON, no mark
 """
 
 
+ROADBLOCK_KEYWORDS = [
+    "captcha", "blocked", "access denied", "login required", "sign in",
+    "verify you are human", "bot detected", "forbidden", "403", "429",
+    "rate limit", "too many requests", "unavailable", "not available",
+    "page not found", "404", "javascript required", "enable javascript",
+    "unusual traffic", "security check",
+]
+
+
+def _is_roadblock(msg: str) -> bool:
+    lower = msg.lower()
+    return any(kw in lower for kw in ROADBLOCK_KEYWORDS)
+
+
 class ScrapeRequest(Model):
     product: str
     location: str
@@ -53,6 +67,7 @@ class ScrapeResponse(Model):
     url: str = ""
     source: str = ""
     success: bool = False
+    error_message: str = ""
 
 
 class ScraperStatus(Model):
@@ -74,7 +89,8 @@ async def scrape_site(
     location: str,
     max_price: str,
     status: dict,
-) -> dict | None:
+) -> dict:
+    """Returns a result dict. On failure, dict contains an '_error' key."""
     price_clause = f"Max price: ${max_price}" if max_price else "No price limit specified."
 
     status.update({"phase": "generating", "message": f"Generating task for {platform}..."})
@@ -96,7 +112,7 @@ async def scrape_site(
     status.update({"phase": "browsing", "message": f"Browsing {platform}..."})
 
     try:
-        result = await browser_client.run(task, schema=ScrapedListing)
+        result = await browser_client.run(task, schema=ScrapedListing, model="gemini-3-flash")
         listing = result.output
         if listing:
             return {
@@ -105,7 +121,18 @@ async def scrape_site(
                 "location": listing.location,
                 "url": listing.url,
             }
-    except Exception as e:
-        logger.error(f"Browser scrape failed for {platform}: {type(e).__name__}: {e}")
+        # Browser ran but returned no output — likely a login wall or block
+        error_msg = f"{platform} page could not load — it may require login or has blocked access."
+        status.update({"phase": "blocked", "message": f"{platform}: page could not load"})
+        return {"_error": error_msg}
 
-    return None
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Browser scrape failed for {platform}: {type(e).__name__}: {error_str}")
+        if _is_roadblock(error_str):
+            error_msg = f"{platform} page could not load — the site blocked automated access."
+            status.update({"phase": "blocked", "message": f"{platform}: access blocked"})
+        else:
+            error_msg = f"{platform} page could not load."
+            status.update({"phase": "failed", "message": f"{platform}: scrape failed"})
+        return {"_error": error_msg}
