@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -5,13 +6,10 @@ import re
 from datetime import datetime
 from typing import List
 from uuid import uuid4
-import asyncio
-
-from dotenv import load_dotenv
-from openai import AsyncOpenAI
-from pydantic import BaseModel
 
 import httpx
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
 from uagents import Agent, Context, Model, Protocol
 from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
@@ -20,20 +18,15 @@ from uagents_core.contrib.protocols.chat import (
     TextContent,
     chat_protocol_spec,
 )
-from browser_use_sdk.v3 import AsyncBrowserUse
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# ASI:One — generates browser task prompts and scores results
 asi_client = AsyncOpenAI(
-    base_url='https://api.asi1.ai/v1',
+    base_url="https://api.asi1.ai/v1",
     api_key=os.getenv("ASI_API_KEY"),
 )
-
-# Browser Use — executes the tasks against real websites
-browser_client = AsyncBrowserUse(api_key=os.getenv("BROWSER_USE_API_KEY"))
 
 agent = Agent(
     name="sustainable-product-finder",
@@ -74,37 +67,6 @@ class SearchResponse(Model):
     summary: str
 
 
-# --- Pydantic schemas for Browser Use structured output ---
-
-class ScrapedListing(BaseModel):
-    title: str
-    price: str
-    location: str
-    url: str
-
-
-# --- Prompts ---
-
-TASK_GEN_PROMPT = """\
-Write a concise browser automation task to find a used or refurbished product on {platform}.
-
-Product: {product}
-Location: {location}
-{price_clause}
-
-The task must instruct the browser to:
-1. Go to {start_url}
-2. Search for the product
-3. Filter for used or refurbished condition only
-4. Filter results to listings near "{location}" only
-5. Apply a max price filter if a budget was specified
-6. Open the best matching listing closest to "{location}"
-7. Extract: exact title, listed price, seller location, and the direct URL of that listing page
-
-The task must instruct to minimize the time needed. Only look at 3 items most, then pick the best of those options. Take no motre than 30 seconds.
-
-Output ONLY the task instruction as plain text. No explanation, no JSON, no markdown.
-"""
 class StatusResponse(Model):
     phase: str
     message: str
@@ -193,48 +155,6 @@ Use real filtered search URLs: eBay with LH_ItemCondition=3000, Craigslist with 
 """
 
 
-PLATFORMS = [
-    ("eBay", "https://www.ebay.com"),
-    ("FaceBook Marketplace", "https://www.facebook.com/marketplace"),
-    ("Offerup", "https://offerup.com/"),
-]
-
-
-async def scrape_site(platform: str, start_url: str, product: str, location: str, max_price: str) -> dict | None:
-    price_clause = f"Max price: ${max_price}" if max_price else "No price limit specified."
-
-    # Step 1: ASI:One generates the browser task
-    r = await asi_client.chat.completions.create(
-        model="asi1",
-        messages=[{"role": "user", "content": TASK_GEN_PROMPT.format(
-            platform=platform,
-            start_url=start_url,
-            product=product,
-            location=location,
-            price_clause=price_clause,
-        )}],
-        max_tokens=300,
-    )
-    task = r.choices[0].message.content.strip()
-    logger.info(f"[{platform}] Browser task: {task}")
-
-    # Step 2: Browser Use executes the task and returns structured output
-    try:
-        result = await browser_client.run(task, schema=ScrapedListing)
-        listing = result.output
-        if listing:
-            return {
-                "title": listing.title,
-                "price": listing.price,
-                "location": listing.location,
-                "url": listing.url,
-                "source": platform,
-            }
-    except Exception as e:
-        logger.error(f"Browser scrape failed for {platform}: {type(e).__name__}: {e}")
-    return None
-
-
 def _parse_json(raw: str) -> dict:
     raw = raw.strip()
     if raw.startswith("```"):
@@ -243,31 +163,6 @@ def _parse_json(raw: str) -> dict:
     return json.loads(raw)
 
 
-async def scrape_and_score(query: str) -> SearchResponse:
-    price_match = re.search(r'\$(\d+)', query) or re.search(r'budget of \$?(\d+)', query)
-    max_price = price_match.group(1) if price_match else ""
-
-    location_match = re.search(r'near (.+?)(?:\.|$)', query)
-    location = location_match.group(1).strip() if location_match else "United States"
-
-    product_match = re.search(r'looking for a used (.+?)(?:\s+with|\s+near|\.|$)', query)
-    product = product_match.group(1).strip() if product_match else query
-
-    # Scrape platforms concurrently, limited to 3 at a time
-    listings = []
-    semaphore = asyncio.Semaphore(3)
-
-    async def scrape_with_limit(platform, start_url):
-        async with semaphore:
-            result = await scrape_site(platform, start_url, product, location, max_price)
-            if result is not None:
-                listings.append(result)
-
-    tasks = [asyncio.create_task(scrape_with_limit(platform, start_url)) for platform, start_url in PLATFORMS]
-    await asyncio.gather(*tasks)
-
-    if not listings:
-        logger.warning("All scrapes failed — using fallback AI generation")
 async def call_scraper(
     client: httpx.AsyncClient,
     platform: str,
@@ -338,7 +233,6 @@ async def orchestrate(query: str) -> SearchResponse:
         )
         data = _parse_json(r.choices[0].message.content)
     else:
-        # ASI:One scores and enriches the real scraped listings
         _orch_status["phase"] = "scoring"
         _orch_status["message"] = "Scoring results by carbon saved, locality, and price..."
         r = await asi_client.chat.completions.create(
@@ -351,11 +245,6 @@ async def orchestrate(query: str) -> SearchResponse:
         )
         data = _parse_json(r.choices[0].message.content)
 
-    results = [ProductResult(**item) for item in data["results"]]
-    return SearchResponse(results=results, summary=data["summary"])
-
-
-# --- REST endpoint (called by Streamlit UI) ---
     _orch_status["phase"] = "done"
     _orch_status["message"] = "Done"
     return SearchResponse(
@@ -381,7 +270,7 @@ async def handle_rest_search(ctx: Context, req: SearchRequest) -> SearchResponse
         return SearchResponse(results=[], summary="Something went wrong. Please try again.")
 
 
-# --- Chat protocol (for Agentverse / DeltaV) ---
+# --- Chat protocol ---
 
 protocol = Protocol(spec=chat_protocol_spec)
 
@@ -427,6 +316,5 @@ async def handle_ack(ctx: Context, sender: str, msg: ChatAcknowledgement):
 agent.include(protocol, publish_manifest=True)
 
 if __name__ == "__main__":
-    print(f"Agent address: {agent.address}")
     print(f"Orchestrator agent address: {agent.address}")
     agent.run()
