@@ -209,8 +209,12 @@ def run():
                         for item in partial:
                             url = item.get("url", "")
                             link_attr = f'href="{url}" target="_blank"' if url else ""
+                            img_url = item.get("image_url", "")
+                            img_tag = f'<div class="product-image"><img src="{img_url}" style="width: 100%; height: auto; max-height: 250px; object-fit: cover; border-radius: 8px; display: block;"></div>' if img_url else ""
+
                             html += f'''
                                 <div class="glass" style="margin-bottom:12px;">
+                                    {img_tag}
                                     <div class="product-title">{item["title"]}</div>
                                     <div class="product-detail">{item["source"]} · {item["location"]}</div>
                                     <div class="price">{item["price"]}</div>
