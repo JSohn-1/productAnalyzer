@@ -75,6 +75,18 @@ class StatusResponse(Model):
     platform_errors: List[str]
 
 
+class RawListing(Model):
+    title: str
+    price: str
+    location: str
+    url: str
+    source: str
+
+
+class PartialResultsResponse(Model):
+    results: List[RawListing]
+
+
 # Global orchestrator status — polled by the UI
 _orch_status: dict = {
     "phase": "idle",
@@ -84,6 +96,9 @@ _orch_status: dict = {
     "platforms_failed": [],
     "platform_errors": [],
 }
+
+# Partial results — populated as each scraper finishes
+_partial_results: list = []
 
 
 # --- Pydantic schemas for Browser Use structured output ---
@@ -112,7 +127,7 @@ The task must instruct the browser to:
 4. Filter results to listings near "{location}" only
 5. Apply a max price filter if a budget was specified
 6. Open the FIRST listing in the results that has a valid URL and price
-7. Extract: exact title, listed price, seller location, the direct URL of that listing page, and the primary high-res image URL of the product.
+7. Extract: exact title, listed price, seller location, the url of the first image of the item, and the direct URL of that listing page
 8. Stop immediately as soon as you have extracted the data — do NOT open or check any other listings
 
 Do NOT browse multiple listings. Return as soon as you have a valid result from the first listing.
@@ -195,7 +210,7 @@ PLATFORMS = [
 
 
 async def scrape_site(platform: str, start_url: str, product: str, location: str, max_price: str) -> dict | None:
-    global _orch_status
+    global _orch_status, _partial_results
     price_clause = f"Max price: ${max_price}" if max_price else "No price limit specified."
 
     # Step 1: ASI:One generates the browser task
@@ -219,7 +234,7 @@ async def scrape_site(platform: str, start_url: str, product: str, location: str
         listing = result.output
         if listing:
             _orch_status["platforms_done"].append(platform)
-            return {
+            result = {
                 "title": listing.title,
                 "price": listing.price,
                 "location": listing.location,
@@ -227,6 +242,8 @@ async def scrape_site(platform: str, start_url: str, product: str, location: str
                 "image_url": listing.image_url,
                 "source": platform,
             }
+            _partial_results.append(result)
+            return result
         _orch_status["platforms_failed"].append(platform)
         _orch_status["platform_errors"].append(f"{platform}: page could not load.")
     except Exception as e:
@@ -245,7 +262,8 @@ def _parse_json(raw: str) -> dict:
 
 
 async def scrape_and_score(query: str) -> SearchResponse:
-    global _orch_status
+    global _orch_status, _partial_results
+    _partial_results = []
 
     price_match = re.search(r'\$(\d+)', query) or re.search(r'budget of \$?(\d+)', query)
     max_price = price_match.group(1) if price_match else ""
@@ -310,6 +328,11 @@ async def scrape_and_score(query: str) -> SearchResponse:
 @agent.on_rest_get("/status", StatusResponse)
 async def handle_status(_ctx: Context) -> StatusResponse:
     return StatusResponse(**_orch_status)
+
+
+@agent.on_rest_get("/partial", PartialResultsResponse)
+async def handle_partial(_ctx: Context) -> PartialResultsResponse:
+    return PartialResultsResponse(results=[RawListing(**r) for r in _partial_results])
 
 
 @agent.on_rest_post("/search", SearchRequest, SearchResponse)

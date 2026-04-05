@@ -2,8 +2,19 @@ import streamlit as st
 import httpx
 import threading
 import time
+import subprocess
+import atexit
+import sys
+import os
 
 AGENT_URL = "http://localhost:8001/search"
+PARTIAL_URL = "http://localhost:8001/partial"
+
+# Start the agent backend automatically (runs once when this module is imported)
+_agent_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent", "agents.py")
+_agent_proc = subprocess.Popen([sys.executable, _agent_path])
+atexit.register(_agent_proc.terminate)
+time.sleep(2)
 
 st.set_page_config(page_title="Sustainable Products", layout="wide")
 
@@ -38,6 +49,15 @@ def get_status() -> dict | None:
         return response.json()
     except Exception:
         return None
+
+
+def get_partial() -> list:
+    try:
+        response = httpx.get(PARTIAL_URL, timeout=3.0)
+        response.raise_for_status()
+        return response.json().get("results", [])
+    except Exception:
+        return []
 
 
 def search_in_background(query: str, container: dict):
@@ -160,6 +180,7 @@ def run():
                     st.session_state.search_task = t
 
                 result_container = st.session_state.result_container
+                partial_placeholder = st.empty()
 
                 while not result_container["done"]:
                     s = get_status()
@@ -181,6 +202,23 @@ def run():
                             platforms_placeholder.markdown("  \n".join(rows))
                     else:
                         phase_placeholder.markdown("*Connecting to orchestrator...*")
+
+                    partial = get_partial()
+                    if partial:
+                        html = ""
+                        for item in partial:
+                            url = item.get("url", "")
+                            link_attr = f'href="{url}" target="_blank"' if url else ""
+                            html += f'''
+                                <div class="glass" style="margin-bottom:12px;">
+                                    <div class="product-title">{item["title"]}</div>
+                                    <div class="product-detail">{item["source"]} · {item["location"]}</div>
+                                    <div class="price">{item["price"]}</div>
+                                    <a class="pay-button" {link_attr} style="text-decoration:none;display:inline-block;">View Listing ➔</a>
+                                </div>
+                            '''
+                        partial_placeholder.markdown(html, unsafe_allow_html=True)
+
                     time.sleep(1)
 
                 st.session_state.search_task.join()
@@ -189,13 +227,13 @@ def run():
 
                 if data is None:
                     status.update(
-                        label="Could not reach agent — is `python agent/agents.py` running?",
+                        label="Could not reach agent — please restart the app.",
                         state="error",
                     )
                     st.session_state.workflow_status = "idle"
                     st.session_state.messages.append({
                         "role": "assistant",
-                        "content": "Could not connect to the agent. Please start it with `python agent/agents.py` and try again.",
+                        "content": "Could not connect to the agent. Please restart the app and try again.",
                     })
                 else:
                     status.update(label="Live listings found!", state="complete", expanded=False)
