@@ -8,10 +8,8 @@ from uuid import uuid4
 import asyncio
 
 from dotenv import load_dotenv
+from pydantic import BaseModel as PydanticBaseModel
 from openai import AsyncOpenAI
-from pydantic import BaseModel
-
-import httpx
 from uagents import Agent, Context, Model, Protocol
 from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
@@ -43,13 +41,6 @@ agent = Agent(
     publish_agent_details=True,
 )
 
-# Scraper agent base URLs — one process per platform
-SCRAPERS = {
-    "eBay": "http://localhost:8002",
-    "FaceBook Marketplace": "http://localhost:8003",
-    "Offerup": "http://localhost:8004",
-}
-
 
 # --- uagents Models ---
 
@@ -74,9 +65,29 @@ class SearchResponse(Model):
     summary: str
 
 
+class StatusResponse(Model):
+    phase: str
+    message: str
+    platforms_started: List[str]
+    platforms_done: List[str]
+    platforms_failed: List[str]
+    platform_errors: List[str]
+
+
+# Global orchestrator status — polled by the UI
+_orch_status: dict = {
+    "phase": "idle",
+    "message": "Idle",
+    "platforms_started": [],
+    "platforms_done": [],
+    "platforms_failed": [],
+    "platform_errors": [],
+}
+
+
 # --- Pydantic schemas for Browser Use structured output ---
 
-class ScrapedListing(BaseModel):
+class ScrapedListing(PydanticBaseModel):
     title: str
     price: str
     location: str
@@ -98,34 +109,14 @@ The task must instruct the browser to:
 3. Filter for used or refurbished condition only
 4. Filter results to listings near "{location}" only
 5. Apply a max price filter if a budget was specified
-6. Open the best matching listing closest to "{location}"
+6. Open the FIRST listing in the results that has a valid URL and price
 7. Extract: exact title, listed price, seller location, and the direct URL of that listing page
+8. Stop immediately as soon as you have extracted the data — do NOT open or check any other listings
 
-The task must instruct to minimize the time needed. Only look at 3 items most, then pick the best of those options. Take no motre than 30 seconds.
+Do NOT browse multiple listings. Return as soon as you have a valid result from the first listing.
 
 Output ONLY the task instruction as plain text. No explanation, no JSON, no markdown.
 """
-class StatusResponse(Model):
-    phase: str
-    message: str
-    platforms_started: List[str]
-    platforms_done: List[str]
-    platforms_failed: List[str]
-    platform_errors: List[str]  # formatted as "Platform: error message"
-
-
-# Global orchestrator status — polled by the UI
-_orch_status: dict = {
-    "phase": "idle",
-    "message": "Idle",
-    "platforms_started": [],
-    "platforms_done": [],
-    "platforms_failed": [],
-    "platform_errors": [],
-}
-
-
-# --- Scoring prompts ---
 
 SCORE_PROMPT = """\
 You are a sustainability scoring assistant. Given real scraped used/secondhand product listings and the user's original request, enrich the data with sustainability metadata.
@@ -195,12 +186,13 @@ Use real filtered search URLs: eBay with LH_ItemCondition=3000, Craigslist with 
 
 PLATFORMS = [
     ("eBay", "https://www.ebay.com"),
-    ("FaceBook Marketplace", "https://www.facebook.com/marketplace"),
-    ("Offerup", "https://offerup.com/"),
+    ("Facebook Marketplace", "https://www.facebook.com/marketplace"),
+    ("OfferUp", "https://offerup.com/"),
 ]
 
 
 async def scrape_site(platform: str, start_url: str, product: str, location: str, max_price: str) -> dict | None:
+    global _orch_status
     price_clause = f"Max price: ${max_price}" if max_price else "No price limit specified."
 
     # Step 1: ASI:One generates the browser task
@@ -223,6 +215,7 @@ async def scrape_site(platform: str, start_url: str, product: str, location: str
         result = await browser_client.run(task, schema=ScrapedListing)
         listing = result.output
         if listing:
+            _orch_status["platforms_done"].append(platform)
             return {
                 "title": listing.title,
                 "price": listing.price,
@@ -230,8 +223,12 @@ async def scrape_site(platform: str, start_url: str, product: str, location: str
                 "url": listing.url,
                 "source": platform,
             }
+        _orch_status["platforms_failed"].append(platform)
+        _orch_status["platform_errors"].append(f"{platform}: page could not load.")
     except Exception as e:
         logger.error(f"Browser scrape failed for {platform}: {type(e).__name__}: {e}")
+        _orch_status["platforms_failed"].append(platform)
+        _orch_status["platform_errors"].append(f"{platform}: {type(e).__name__}")
     return None
 
 
@@ -244,6 +241,8 @@ def _parse_json(raw: str) -> dict:
 
 
 async def scrape_and_score(query: str) -> SearchResponse:
+    global _orch_status
+
     price_match = re.search(r'\$(\d+)', query) or re.search(r'budget of \$?(\d+)', query)
     max_price = price_match.group(1) if price_match else ""
 
@@ -253,82 +252,26 @@ async def scrape_and_score(query: str) -> SearchResponse:
     product_match = re.search(r'looking for a used (.+?)(?:\s+with|\s+near|\.|$)', query)
     product = product_match.group(1).strip() if product_match else query
 
-    # Scrape platforms concurrently, limited to 3 at a time
-    listings = []
-    semaphore = asyncio.Semaphore(3)
-
-    async def scrape_with_limit(platform, start_url):
-        async with semaphore:
-            result = await scrape_site(platform, start_url, product, location, max_price)
-            if result is not None:
-                listings.append(result)
-
-    tasks = [asyncio.create_task(scrape_with_limit(platform, start_url)) for platform, start_url in PLATFORMS]
-    await asyncio.gather(*tasks)
-
-    if not listings:
-        logger.warning("All scrapes failed — using fallback AI generation")
-async def call_scraper(
-    client: httpx.AsyncClient,
-    platform: str,
-    base_url: str,
-    product: str,
-    location: str,
-    max_price: str,
-) -> dict | None:
-    global _orch_status
-    try:
-        r = await client.post(
-            f"{base_url}/scrape",
-            json={"product": product, "location": location, "max_price": max_price},
-            timeout=300.0,
-        )
-        r.raise_for_status()
-        data = r.json()
-        if data.get("success"):
-            _orch_status["platforms_done"].append(platform)
-            return data
-        _orch_status["platforms_failed"].append(platform)
-        error_msg = data.get("error_message") or f"{platform} page could not load."
-        _orch_status["platform_errors"].append(f"{platform}: {error_msg}")
-    except Exception as e:
-        logger.error(f"Scraper call failed [{platform}]: {type(e).__name__}: {e}")
-        _orch_status["platforms_failed"].append(platform)
-        _orch_status["platform_errors"].append(f"{platform}: page could not load.")
-    return None
-
-
-async def orchestrate(query: str) -> SearchResponse:
-    global _orch_status
+    platform_names = [p for p, _ in PLATFORMS]
     _orch_status = {
         "phase": "scraping",
-        "message": "Dispatching scraper agents...",
-        "platforms_started": list(SCRAPERS.keys()),
+        "message": "Dispatching browser agents...",
+        "platforms_started": platform_names,
         "platforms_done": [],
         "platforms_failed": [],
         "platform_errors": [],
     }
 
-    price_match = re.search(r"\$(\d+)", query) or re.search(r"budget of \$?(\d+)", query)
-    max_price = price_match.group(1) if price_match else ""
-
-    location_match = re.search(r"near (.+?)(?:\.|$)", query)
-    location = location_match.group(1).strip() if location_match else "United States"
-
-    product_match = re.search(r"looking for a used (.+?)(?:\s+with|\s+near|\.|$)", query)
-    product = product_match.group(1).strip() if product_match else query
-
-    async with httpx.AsyncClient() as client:
-        tasks = [
-            call_scraper(client, platform, base_url, product, location, max_price)
-            for platform, base_url in SCRAPERS.items()
-        ]
-        results = await asyncio.gather(*tasks)
-
-    listings = [r for r in results if r]
+    # Scrape all platforms concurrently — one browser session each
+    tasks = [
+        asyncio.create_task(scrape_site(platform, start_url, product, location, max_price))
+        for platform, start_url in PLATFORMS
+    ]
+    results = await asyncio.gather(*tasks)
+    listings = [r for r in results if r is not None]
 
     if not listings:
-        logger.warning("All scrapers failed — using fallback AI generation")
+        logger.warning("All scrapes failed — using fallback AI generation")
         _orch_status["phase"] = "fallback"
         _orch_status["message"] = "Live scraping failed — generating AI listings..."
         r = await asi_client.chat.completions.create(
@@ -338,7 +281,6 @@ async def orchestrate(query: str) -> SearchResponse:
         )
         data = _parse_json(r.choices[0].message.content)
     else:
-        # ASI:One scores and enriches the real scraped listings
         _orch_status["phase"] = "scoring"
         _orch_status["message"] = "Scoring results by carbon saved, locality, and price..."
         r = await asi_client.chat.completions.create(
@@ -351,11 +293,6 @@ async def orchestrate(query: str) -> SearchResponse:
         )
         data = _parse_json(r.choices[0].message.content)
 
-    results = [ProductResult(**item) for item in data["results"]]
-    return SearchResponse(results=results, summary=data["summary"])
-
-
-# --- REST endpoint (called by Streamlit UI) ---
     _orch_status["phase"] = "done"
     _orch_status["message"] = "Done"
     return SearchResponse(
@@ -375,7 +312,7 @@ async def handle_status(_ctx: Context) -> StatusResponse:
 async def handle_rest_search(ctx: Context, req: SearchRequest) -> SearchResponse:
     ctx.logger.info(f"REST /search: {req.query}")
     try:
-        return await orchestrate(req.query)
+        return await scrape_and_score(req.query)
     except Exception:
         ctx.logger.exception("Error in /search")
         return SearchResponse(results=[], summary="Something went wrong. Please try again.")
@@ -396,7 +333,7 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
     text = "".join(item.text for item in msg.content if isinstance(item, TextContent))
 
     try:
-        result = await orchestrate(text)
+        result = await scrape_and_score(text)
         lines = [result.summary, ""]
         for r in result.results:
             if r.repair_suggestion:
@@ -428,5 +365,4 @@ agent.include(protocol, publish_manifest=True)
 
 if __name__ == "__main__":
     print(f"Agent address: {agent.address}")
-    print(f"Orchestrator agent address: {agent.address}")
     agent.run()
