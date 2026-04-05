@@ -19,6 +19,7 @@ from uagents_core.contrib.protocols.chat import (
     TextContent,
     chat_protocol_spec,
 )
+from browser_use_sdk.v3 import AsyncBrowserUse
 
 load_dotenv()
 
@@ -28,6 +29,9 @@ asi_client = AsyncOpenAI(
     base_url="https://api.asi1.ai/v1",
     api_key=os.getenv("ASI_API_KEY"),
 )
+
+# Browser Use — actually opens a browser and visits real websites
+browser_client = AsyncBrowserUse(api_key=os.getenv("BROWSER_USE_API_KEY"))
 
 agent = Agent(
     name="sustainable-product-finder",
