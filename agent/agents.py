@@ -1,11 +1,14 @@
 import json
+import logging
 import os
+import re
 from datetime import datetime
 from typing import List
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import AsyncOpenAI
+from pydantic import BaseModel
 from uagents import Agent, Context, Model, Protocol
 from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
@@ -14,13 +17,20 @@ from uagents_core.contrib.protocols.chat import (
     TextContent,
     chat_protocol_spec,
 )
+from browser_use_sdk.v3 import AsyncBrowserUse
 
 load_dotenv()
 
-client = OpenAI(
+logger = logging.getLogger(__name__)
+
+# ASI:One — generates browser task prompts and scores results
+asi_client = AsyncOpenAI(
     base_url='https://api.asi1.ai/v1',
     api_key=os.getenv("ASI_API_KEY"),
 )
+
+# Browser Use — executes the tasks against real websites
+browser_client = AsyncBrowserUse(api_key=os.getenv("BROWSER_USE_API_KEY"))
 
 agent = Agent(
     name="sustainable-product-finder",
@@ -31,7 +41,7 @@ agent = Agent(
 )
 
 
-# --- Models ---
+# --- uagents Models (for REST + chat protocol) ---
 
 class SearchRequest(Model):
     query: str
@@ -54,58 +64,177 @@ class SearchResponse(Model):
     summary: str
 
 
-# --- Core search logic ---
+# --- Pydantic schemas for Browser Use structured output ---
 
-SYSTEM_PROMPT = """
-You are a sustainable product sourcing assistant. Given a user request, generate realistic search results
-from Craigslist, Facebook Marketplace, and local business directories.
+class ScrapedListing(BaseModel):
+    title: str
+    price: str
+    location: str
+    url: str
 
-Return ONLY valid JSON (no markdown code fences, no explanation) with this exact structure:
-{
-  "summary": "2-3 sentence assistant message summarizing what you found and the best pick",
+
+# --- Prompts ---
+
+TASK_GEN_PROMPT = """\
+Write a concise browser automation task to find a used or refurbished product on {platform}.
+
+User request: "{query}"{price_clause}
+
+The task must instruct the browser to:
+1. Go to {start_url}
+2. Search for the product
+3. Filter for used or refurbished condition only
+4. Apply a max price filter if a budget was specified
+5. Open the best matching listing
+6. Extract: exact title, listed price, seller location, and the direct URL of that listing page
+
+Output ONLY the task instruction as plain text. No explanation, no JSON, no markdown.
+"""
+
+SCORE_PROMPT = """\
+You are a sustainability scoring assistant. Given real scraped used/secondhand product listings and the user's original request, enrich the data with sustainability metadata.
+
+User request: {query}
+
+Scraped listings (JSON):
+{listings}
+
+Return ONLY valid JSON (no markdown, no explanation):
+{{
+  "summary": "2-3 sentence summary of the findings and the best pick",
   "results": [
-    {
-      "title": "product name and condition",
-      "price": "$XXX",
-      "location": "city or distance description",
-      "source": "Craigslist | Facebook Marketplace | Local Business",
+    {{
+      "title": "...",
+      "price": "...",
+      "location": "...",
+      "source": "eBay",
+      "url": "...",
       "carbon_saved": "XXkg CO2 saved vs buying new",
       "is_local_business": false,
       "repair_suggestion": false,
-      "repair_text": "",
-      "url": "https://..."
-    }
+      "repair_text": ""
+    }},
+    {{
+      "title": "Got a broken [product type]?",
+      "price": "",
+      "location": "",
+      "source": "",
+      "url": "https://www.ifixit.com/Search?query=[product+keywords]",
+      "carbon_saved": "",
+      "is_local_business": false,
+      "repair_suggestion": true,
+      "repair_text": "Before replacing it, check if your current one can be repaired. Repairing saves 100% of the manufacturing carbon cost."
+    }}
   ]
-}
+}}
 
 Rules:
-- Include 2-3 used/refurbished product results
-- Add 1 final entry with repair_suggestion: true (title like "Got a broken X?", no price/source needed, fill repair_text)
-- Local business entries: set is_local_business: true, include store name + distance in location, leave url empty
-- carbon_saved: realistic estimates — used electronics save 50-150kg CO2 vs new; leave empty for repair/local entries
-- Stay within the user's stated budget where possible; flag if slightly over
-- url field: for Craigslist use a real craigslist.org search URL for the product (e.g. https://sfbay.craigslist.org/search/sss?query=4k+monitor), for Facebook Marketplace use https://www.facebook.com/marketplace/search/?query=4k+monitor, for repair entries use https://www.ifixit.com/Search?query=monitor — replace spaces with + and match the product
+- Preserve title, price, location, and url exactly as scraped
+- Estimate carbon_saved: used electronics typically save 50-150kg CO2 vs buying new
+- Add exactly 1 repair_suggestion entry at the end with a real iFixit search URL
+"""
+
+FALLBACK_PROMPT = """\
+Live product scraping failed. Generate 3 realistic placeholder listings for this request and return valid JSON.
+
+User request: {query}
+
+Return ONLY valid JSON (no markdown):
+{{
+  "summary": "...",
+  "results": [
+    {{
+      "title": "...", "price": "$...", "location": "...",
+      "source": "eBay",
+      "url": "https://www.ebay.com/sch/i.html?_nkw=QUERY&LH_ItemCondition=3000&_udhi=PRICE",
+      "carbon_saved": "XXkg CO2 saved vs buying new",
+      "is_local_business": false, "repair_suggestion": false, "repair_text": ""
+    }}
+  ]
+}}
+Include 3 results (one per platform) + 1 repair_suggestion at the end.
+Use real filtered search URLs: eBay with LH_ItemCondition=3000, Craigslist with max_price, Facebook with condition=used.
 """
 
 
-def call_asi_one(query: str) -> SearchResponse:
-    r = client.chat.completions.create(
+PLATFORMS = [
+    ("eBay", "https://www.ebay.com"),
+]
+
+
+async def scrape_site(platform: str, start_url: str, query: str, max_price: str) -> dict | None:
+    price_clause = f"\nBudget: under ${max_price}." if max_price else ""
+
+    # Step 1: ASI:One generates the browser task
+    r = await asi_client.chat.completions.create(
         model="asi1",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": query},
-        ],
-        max_tokens=1024,
+        messages=[{"role": "user", "content": TASK_GEN_PROMPT.format(
+            platform=platform,
+            start_url=start_url,
+            query=query,
+            price_clause=price_clause,
+        )}],
+        max_tokens=300,
     )
+    task = r.choices[0].message.content.strip()
+    logger.info(f"[{platform}] Browser task: {task}")
 
-    raw = r.choices[0].message.content.strip()
+    # Step 2: Browser Use executes the task and returns structured output
+    try:
+        result = await browser_client.run(task, schema=ScrapedListing)
+        listing = result.output
+        if listing:
+            return {
+                "title": listing.title,
+                "price": listing.price,
+                "location": listing.location,
+                "url": listing.url,
+                "source": platform,
+            }
+    except Exception as e:
+        logger.error(f"Browser scrape failed for {platform}: {type(e).__name__}: {e}")
+    return None
 
-    # Strip markdown code fences if the model adds them
+
+def _parse_json(raw: str) -> dict:
+    raw = raw.strip()
     if raw.startswith("```"):
         raw = raw[raw.index("\n") + 1:]
         raw = raw[:raw.rfind("```")]
+    return json.loads(raw)
 
-    data = json.loads(raw)
+
+async def scrape_and_score(query: str) -> SearchResponse:
+    price_match = re.search(r'\$(\d+)', query) or re.search(r'budget of \$?(\d+)', query)
+    max_price = price_match.group(1) if price_match else ""
+
+    # Scrape platforms sequentially to avoid concurrent session limits
+    listings = []
+    for platform, start_url in PLATFORMS:
+        result = await scrape_site(platform, start_url, query, max_price)
+        if result is not None:
+            listings.append(result)
+
+    if not listings:
+        logger.warning("All scrapes failed — using fallback AI generation")
+        r = await asi_client.chat.completions.create(
+            model="asi1",
+            messages=[{"role": "user", "content": FALLBACK_PROMPT.format(query=query)}],
+            max_tokens=1024,
+        )
+        data = _parse_json(r.choices[0].message.content)
+    else:
+        # ASI:One scores and enriches the real scraped listings
+        r = await asi_client.chat.completions.create(
+            model="asi1",
+            messages=[{"role": "user", "content": SCORE_PROMPT.format(
+                query=query,
+                listings=json.dumps(listings, indent=2),
+            )}],
+            max_tokens=1024,
+        )
+        data = _parse_json(r.choices[0].message.content)
+
     results = [ProductResult(**item) for item in data["results"]]
     return SearchResponse(results=results, summary=data["summary"])
 
@@ -116,13 +245,13 @@ def call_asi_one(query: str) -> SearchResponse:
 async def handle_rest_search(ctx: Context, req: SearchRequest) -> SearchResponse:
     ctx.logger.info(f"REST /search: {req.query}")
     try:
-        return call_asi_one(req.query)
+        return await scrape_and_score(req.query)
     except Exception:
         ctx.logger.exception("Error in /search")
         return SearchResponse(results=[], summary="Something went wrong. Please try again.")
 
 
-# --- Chat protocol (for Agentverse / DeltaV compatibility) ---
+# --- Chat protocol (for Agentverse / DeltaV) ---
 
 protocol = Protocol(spec=chat_protocol_spec)
 
@@ -137,7 +266,7 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
     text = "".join(item.text for item in msg.content if isinstance(item, TextContent))
 
     try:
-        result = call_asi_one(text)
+        result = await scrape_and_score(text)
         lines = [result.summary, ""]
         for r in result.results:
             if r.repair_suggestion:

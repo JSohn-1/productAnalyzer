@@ -16,7 +16,7 @@ def load_css():
 
 def search_products(query: str):
     try:
-        response = httpx.post(AGENT_URL, json={"query": query}, timeout=30.0)
+        response = httpx.post(AGENT_URL, json={"query": query}, timeout=300.0)
         response.raise_for_status()
         return response.json()
     except httpx.ConnectError:
@@ -90,11 +90,26 @@ def run():
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        prompt = st.chat_input("E.g., I need a 4k monitor. Budget is $200. Used preferred.")
-        if prompt:
-            st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.form("search_form", clear_on_submit=False):
+            product = st.text_input("Product", placeholder="e.g. 4K monitor, bicycle, sofa")
+            col_loc, col_price = st.columns(2)
+            with col_loc:
+                location = st.text_input("Location", placeholder="e.g. San Francisco, CA")
+            with col_price:
+                max_price = st.text_input("Max Price ($)", placeholder="e.g. 200")
+            submitted = st.form_submit_button("Find Sustainable Listings", use_container_width=True)
+
+        if submitted and product.strip():
+            parts = [f"I'm looking for a used {product.strip()}"]
+            if max_price.strip():
+                parts.append(f"with a budget of ${max_price.strip()}")
+            if location.strip():
+                parts.append(f"near {location.strip()}")
+            query = " ".join(parts) + "."
+
+            st.session_state.messages.append({"role": "user", "content": query})
             st.session_state.workflow_status = "searching"
-            st.session_state.pending_query = prompt
+            st.session_state.pending_query = query
             st.rerun()
 
     with col_dash:
@@ -104,8 +119,9 @@ def run():
             st.info("Awaiting Intent. Ask me to find something sustainable!")
 
         elif st.session_state.workflow_status == "searching":
-            with st.status("Querying ASI:One Agent...", expanded=True) as status:
-                st.write("**Parsing Intent:** Sending request to agent...")
+            with st.status("Searching live listings via Browser Use...", expanded=True) as status:
+                st.write("**Generating search tasks** with ASI:One...")
+                st.write("**Scraping** eBay, Craigslist, and Facebook Marketplace in parallel (this takes ~1-2 min)...")
                 data = search_products(st.session_state.pending_query)
 
                 if data is None:
@@ -119,8 +135,8 @@ def run():
                         "content": "Could not connect to the agent. Please start it with `python agent/agents.py` and try again.",
                     })
                 else:
-                    st.write("**Evaluating Results:** Ranking by carbon saved, locality, and price...")
-                    status.update(label="Results ready!", state="complete", expanded=False)
+                    st.write("**Scoring results** by carbon saved, locality, and price...")
+                    status.update(label="Live listings found!", state="complete", expanded=False)
                     st.session_state.search_results = data.get("results", [])
                     st.session_state.workflow_status = "found"
                     summary = data.get("summary", "Here are the best sustainable options I found.")
