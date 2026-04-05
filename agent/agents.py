@@ -147,6 +147,9 @@ You are a sustainability scoring assistant. Given real scraped used/secondhand p
 
 User request: {query}
 
+**IMPORTANT:** Search the internet for the manufacturing carbon footprint of a typical {query}. Provide the estimate in kg CO2 and cite your sources.
+
+
 Scraped listings (JSON):
 {listings}
 
@@ -181,8 +184,9 @@ Return ONLY valid JSON (no markdown, no explanation):
 }}
 
 Rules:
+- Search the internet for the manufacturing carbon footprint of a typical {query}. Provide the estimate in kg CO2 and cite your sources.
 - Preserve title, price, location, and url exactly as scraped
-- Estimate carbon_saved: used electronics typically save 50-150kg CO2 vs buying new
+- Estimate carbon_saved: look online for information to make an accurate assesment for the carbon delta
 - Add exactly 1 repair_suggestion entry at the end with a real iFixit search URL
 """
 
