@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import List
+from typing import List, Optional, Union
 from uuid import uuid4
 
 import httpx
@@ -12,13 +12,13 @@ from dotenv import load_dotenv
 from pydantic import BaseModel as PydanticBaseModel
 from openai import AsyncOpenAI
 from uagents import Agent, Context, Model, Protocol
-from uagents_core.contrib.protocols.chat import (
-    ChatAcknowledgement,
-    ChatMessage,
-    EndSessionContent,
-    TextContent,
-    chat_protocol_spec,
-)
+# from uagents_core.contrib.protocols.chat import (
+#     ChatAcknowledgement,
+#     ChatMessage,
+#     EndSessionContent,
+#     TextContent,
+#     chat_protocol_spec,
+# )
 from browser_use_sdk.v3 import AsyncBrowserUse
 
 load_dotenv()
@@ -31,7 +31,7 @@ asi_client = AsyncOpenAI(
 )
 
 # Browser Use — actually opens a browser and visits real websites
-browser_client = AsyncBrowserUse(api_key=os.getenv("BROWSER_USE_API_KEY"))
+browser_client = AsyncBrowserUse(api_key=os.getenv("BROWSERUSE_API_KEY"))
 
 agent = Agent(
     name="sustainable-product-finder",
@@ -61,6 +61,7 @@ class ProductResult(Model):
     image_url: str = ""
     sustainability_score: float = 0.0
     price_score: float = 0.0
+    locality_score: float = 0.0
     final_score: float = 0.0
 
 
@@ -176,10 +177,11 @@ Return ONLY valid JSON (no markdown, no explanation):
   ]
 }}
 
-Rules:
 - Preserve title, price, location, and url exactly as scraped
+- image_url MUST be a direct URL. If missing or malformed, use a high-quality placeholder: https://source.unsplash.com/400x300/?product
 - Estimate carbon_saved: used electronics typically save 50-150kg CO2 vs buying new
 - Add exactly 1 repair_suggestion entry at the end with a real iFixit search URL
+- NO markdown formatting (like ![...](...)) in JSON values.
 """
 
 FALLBACK_PROMPT = """\
@@ -187,21 +189,25 @@ Live product scraping failed. Generate 3 realistic placeholder listings for this
 
 User request: {query}
 
-Return ONLY valid JSON (no markdown):
+Return ONLY valid JSON (no markdown, no backticks):
 {{
-  "summary": "...",
+  "summary": "AI generated placeholder listings because live scraping is currently unavailable.",
   "results": [
     {{
       "title": "...", "price": "$...", "location": "...",
       "source": "eBay",
-      "url": "https://www.ebay.com/sch/i.html?_nkw=QUERY&LH_ItemCondition=3000&_udhi=PRICE",
+      "url": "https://www.ebay.com/sch/i.html?_nkw=QUERY&LH_ItemCondition=3000",
+      "image_url": "https://images.unsplash.com/photo-1550745165-9bc0b2527233?auto=format&fit=crop&q=80&w=400",
       "carbon_saved": "XXkg CO2 saved vs buying new",
       "is_local_business": false, "repair_suggestion": false, "repair_text": ""
     }}
   ]
 }}
-Include 3 results (one per platform) + 1 repair_suggestion at the end.
-Use real filtered search URLs: eBay with LH_ItemCondition=3000, Craigslist with max_price, Facebook with condition=used.
+
+Rules:
+- Include 3 results (one per platform) + 1 repair_suggestion at the end.
+- image_url MUST be a direct link to a high-quality product photo (use Unsplash search-by-keyword structure: https://source.unsplash.com/400x300/?PRODUCT_KEYWORD).
+- NEVER use markdown syntax (like ![...](...)) in any field.
 """
 
 
@@ -212,7 +218,7 @@ PLATFORMS = [
 ]
 
 
-async def scrape_site(platform: str, start_url: str, product: str, location: str, max_price: str) -> dict | None:
+async def scrape_site(platform: str, start_url: str, product: str, location: str, max_price: str) -> Optional[dict]:
     global _orch_status, _partial_results
     price_clause = f"Max price: ${max_price}" if max_price else "No price limit specified."
 
@@ -276,7 +282,18 @@ def _parse_json(raw: str) -> dict:
         return json.loads(match.group(0))
 
 
-def _extract_number(raw: str) -> float | None:
+def _clean_url(url: str) -> str:
+    if not url:
+        return ""
+    # Strip markdown syntax ![...](url) or [...](url)
+    match = re.search(r'\]\((https?://[^\)]+)\)', url)
+    if match:
+        return match.group(1).strip()
+    # Strip backticks
+    return url.replace("`", "").strip()
+
+
+def _extract_number(raw: str) -> Optional[float]:
     if not raw:
         return None
     match = re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", raw)
@@ -285,7 +302,12 @@ def _extract_number(raw: str) -> float | None:
     return float(match.group(0).replace(",", ""))
 
 
-def _compute_weighted_scores(results: list[dict], sustainability_weight: float = 0.6, price_weight: float = 0.4) -> list[dict]:
+def _compute_weighted_scores(
+    results: list[dict], 
+    sustainability_weight: float = 0.5, 
+    price_weight: float = 0.3,
+    locality_weight: float = 0.2
+) -> list[dict]:
     scored_candidates: list[dict] = []
     repair_entries: list[dict] = []
 
@@ -293,6 +315,7 @@ def _compute_weighted_scores(results: list[dict], sustainability_weight: float =
         if item.get("repair_suggestion"):
             item["sustainability_score"] = 0.0
             item["price_score"] = 0.0
+            item["locality_score"] = 0.0
             item["final_score"] = 0.0
             repair_entries.append(item)
             continue
@@ -313,20 +336,32 @@ def _compute_weighted_scores(results: list[dict], sustainability_weight: float =
     price_max = max(known_prices) if known_prices else 0.0
 
     for item, carbon, price in zip(scored_candidates, carbon_values, price_values):
+        # 1. Sustainability Score (Carbon)
         if carbon is None or carbon_max == carbon_min:
-            sustainability_score = 0.0 if carbon is None else 1.0
+            sustainability_score = 1.0 if carbon is not None else 0.0
         else:
             sustainability_score = (carbon - carbon_min) / (carbon_max - carbon_min)
 
+        # 2. Price Score (Inverse - cheaper is better)
         if price is None or price_max == price_min:
-            price_score = 0.0 if price is None else 1.0
+            price_score = 1.0 if price is not None else 0.0
         else:
             price_score = (price_max - price) / (price_max - price_min)
 
-        final_score = (sustainability_weight * sustainability_score) + (price_weight * price_score)
-        item["sustainability_score"] = round(sustainability_score, 3)
-        item["price_score"] = round(price_score, 3)
-        item["final_score"] = round(final_score, 3)
+        # 3. Locality Score (Binary bonus for now)
+        locality_score = 1.0 if item.get("is_local_business") else 0.0
+
+        # Weighted Final Score
+        final_score = (
+            (sustainability_weight * sustainability_score) + 
+            (price_weight * price_score) + 
+            (locality_weight * locality_score)
+        )
+
+        item["sustainability_score"] = round(sustainability_score, 2)
+        item["price_score"] = round(price_score, 2)
+        item["locality_score"] = round(locality_score, 2)
+        item["final_score"] = round(final_score, 2)
 
     scored_candidates.sort(
         key=lambda i: (i.get("final_score", 0.0), i.get("sustainability_score", 0.0), i.get("price_score", 0.0)),
@@ -389,6 +424,9 @@ async def scrape_and_score(query: str) -> SearchResponse:
         )
         data = _parse_json(r.choices[0].message.content)
 
+    for item in data.get("results", []):
+        item["image_url"] = _clean_url(item.get("image_url", ""))
+        
     data["results"] = _compute_weighted_scores(data.get("results", []))
 
     _orch_status["phase"] = "done"
@@ -421,50 +459,10 @@ async def handle_rest_search(ctx: Context, req: SearchRequest) -> SearchResponse
         return SearchResponse(results=[], summary="Something went wrong. Please try again.")
 
 
-# --- Chat protocol ---
-
-protocol = Protocol(spec=chat_protocol_spec)
-
-
-@protocol.on_message(ChatMessage)
-async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
-    await ctx.send(
-        sender,
-        ChatAcknowledgement(timestamp=datetime.now(), acknowledged_msg_id=msg.msg_id),
-    )
-
-    text = "".join(item.text for item in msg.content if isinstance(item, TextContent))
-
-    try:
-        result = await scrape_and_score(text)
-        lines = [result.summary, ""]
-        for r in result.results:
-            if r.repair_suggestion:
-                lines.append(f"- **Repair first:** {r.title} — {r.repair_text}")
-            else:
-                label = "🏢 Local SMB" if r.is_local_business else r.source
-                lines.append(f"- **{r.title}** ({r.price}) — {label} · {r.location}")
-        response_text = "\n".join(lines)
-    except Exception:
-        ctx.logger.exception("Error in chat handler")
-        response_text = "Sorry, I couldn't process that request."
-
-    await ctx.send(sender, ChatMessage(
-        timestamp=datetime.utcnow(),
-        msg_id=uuid4(),
-        content=[
-            TextContent(type="text", text=response_text),
-            EndSessionContent(type="end-session"),
-        ],
-    ))
-
-
-@protocol.on_message(ChatAcknowledgement)
-async def handle_ack(ctx: Context, sender: str, msg: ChatAcknowledgement):
-    pass
-
-
-agent.include(protocol, publish_manifest=True)
+# --- Chat protocol (Stubbed due to mission dependency) ---
+# protocol = Protocol(spec=chat_protocol_spec)
+# ... chat handlers ...
+# agent.include(protocol, publish_manifest=True)
 
 if __name__ == "__main__":
     print(f"Agent address: {agent.address}")

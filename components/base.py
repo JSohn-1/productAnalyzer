@@ -6,15 +6,30 @@ import subprocess
 import atexit
 import sys
 import os
+from typing import Optional, Union, List
 
 AGENT_URL = "http://localhost:8001/search"
 PARTIAL_URL = "http://localhost:8001/partial"
 
-# Start the agent backend automatically (runs once when this module is imported)
+# Start the agent backend automatically if not already running
 _agent_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agent", "agents.py")
-_agent_proc = subprocess.Popen([sys.executable, _agent_path])
-atexit.register(_agent_proc.terminate)
-time.sleep(2)
+
+def is_agent_running():
+    try:
+        response = httpx.get("http://localhost:8001/status", timeout=1.0)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+if not is_agent_running():
+    _agent_proc = subprocess.Popen([sys.executable, _agent_path])
+    atexit.register(_agent_proc.terminate)
+    time.sleep(2)
+else:
+    # If already running, we don't need to manage the process here,
+    # but we should ensure we have a reference to its termination if needed.
+    # For now, we assume it's managed elsewhere or stable.
+    pass
 
 st.set_page_config(page_title="Sustainable Products", layout="wide")
 
@@ -42,7 +57,7 @@ def search_products(query: str):
         return None
 
 
-def get_status() -> dict | None:
+def get_status() -> Optional[dict]:
     try:
         response = httpx.get(STATUS_URL, timeout=3.0)
         response.raise_for_status()
@@ -69,6 +84,24 @@ def render_results(results):
     for item in results:
         url = item.get("url", "")
         img_url = item.get("image_url", "")
+        
+        # Sanitize image URL (remove potential markdown hallucinations)
+        if img_url and "](" in img_url:
+            import re
+            m = re.search(r'\]\((https?://[^\)]+)\)', img_url)
+            if m: img_url = m.group(1).strip()
+        img_url = (img_url or "").replace("`", "").strip()
+        
+        # Default placeholder if still empty
+        if not img_url:
+            img_url = f"https://images.unsplash.com/photo-1542601906990-b4d3fb778b09?auto=format&fit=crop&q=80&w=400"
+        
+        # Format scores (scale 0-10 for display)
+        final = round(item.get("final_score", 0.0) * 10, 1)
+        eco = int(item.get("sustainability_score", 0.0) * 100)
+        price_val = int(item.get("price_score", 0.0) * 100)
+        local_val = int(item.get("locality_score", 0.0) * 100)
+
         if item.get("repair_suggestion"):
             st.markdown(f'''
                 <div class="glass">
@@ -80,30 +113,49 @@ def render_results(results):
                     </div>
                 </div>
             ''', unsafe_allow_html=True)
-        elif item.get("is_local_business"):
-            st.markdown(f'''
-                <div class="glass" style="margin-bottom: 20px;">
-                    <div class="carbon-badge" style="background: linear-gradient(135deg, #1f6feb 0%, #388bfd 100%);">🏢 Local SMB Supported</div>
-                    <div class="product-title">{item["title"]}</div>
-                    <div class="product-detail">Location: {item["location"]}</div>
-                    <div class="product-detail">Source: {item["source"]}</div>
-                    <div class="price">{item["price"]}</div>
-                    <a class="pay-button" style="background-color: #1f6feb; box-shadow: 0 4px 15px rgba(31, 111, 235, 0.3); text-decoration: none; display: inline-block;">Call Store & Reserve</a>
-                </div>
-            ''', unsafe_allow_html=True)
         else:
             carbon = item.get("carbon_saved", "")
             badge = f'<div class="carbon-badge">Carbon Saved: {carbon}</div>' if carbon else ""
             link = f'href="{url}" target="_blank"' if url else ""
-            img_tag = f'<div class="product-image"><img src="{img_url}" style="width: 100%; height: auto; max-height: 250px; object-fit: cover; border-radius: 8px; display: block;"></div>' if img_url else ""
+            img_tag = f'<div class="product-image"><img src="{img_url}" style="width: 100%; height: auto; max-height: 250px; object-fit: cover; border-radius: 8px; display: block;"></div>'
+            
+            # Scorings HTML
+            score_html = f'''
+                <div class="eco-rank-badge" title="Weighted Aggregate Score">{final}</div>
+                <div class="score-container">
+                    <div class="score-row">
+                        <div class="score-header">
+                            <span class="score-label">Sustainability</span>
+                            <span class="score-num">{eco}%</span>
+                        </div>
+                        <div class="score-bar-bg"><div class="score-bar-fill fill-eco" style="width: {eco}%;"></div></div>
+                    </div>
+                    <div class="score-row">
+                        <div class="score-header">
+                            <span class="score-label">Price Value</span>
+                            <span class="score-num">{price_val}%</span>
+                        </div>
+                        <div class="score-bar-bg"><div class="score-bar-fill fill-price" style="width: {price_val}%;"></div></div>
+                    </div>
+                    <div class="score-row">
+                        <div class="score-header">
+                            <span class="score-label">Locality Bonus</span>
+                            <span class="score-num">{local_val}%</span>
+                        </div>
+                        <div class="score-bar-bg"><div class="score-bar-fill fill-local" style="width: {local_val}%;"></div></div>
+                    </div>
+                </div>
+            '''
+
             st.markdown(f'''
-                <div class="glass" style="margin-bottom: 20px;">
+                <div class="glass" style="margin-bottom: 20px; position: relative;">
                     {badge}
                     {img_tag}
                     <div class="product-title">{item["title"]}</div>
                     <div class="product-detail">Location: {item["location"]}</div>
                     <div class="product-detail">Source: {item["source"]}</div>
                     <div class="price">{item["price"]}</div>
+                    {score_html}
                     <a class="pay-button" {link} style="text-decoration: none; display: inline-block;">View Listing ➔</a>
                 </div>
             ''', unsafe_allow_html=True)
