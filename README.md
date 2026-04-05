@@ -7,7 +7,7 @@ A web application that helps users find sustainable, used products by scraping r
 - **AI-Powered Search**: Uses ASI:One to generate intelligent browser automation tasks
 - **Live Scraping**: Browser Use SDK executes real-time web scraping
 - **Sustainability Focus**: Prioritizes used/refurbished items and calculates carbon savings
-- **Multi-Platform**: Currently supports eBay (easily extensible to Facebook Marketplace, OfferUp, etc.)
+- **Multi-Platform**: Currently supports eBay, Offerup, and Facebook Marketplace
 - **Concurrent Processing**: Spawns up to 3 scraping threads simultaneously for performance
 - **Beautiful UI**: Glass-morphism design with responsive layout
 
@@ -102,7 +102,3 @@ chmod +x run.sh  # Make executable (Linux/macOS)
 - The agent supports both REST API and uAgents chat protocol
 - Easily add new platforms by extending the `PLATFORMS` list and creating platform-specific prompts
 - CSS styling can be customized in `style.css`
-
-## License
-
-[Add your license here]
