@@ -24,7 +24,7 @@ Product: {product}
 Location: {location}
 {price_clause}
 
-The task must instruct the browser to efficently and as quickly as possible:
+The task must instruct the browser:
 1. Go to {start_url}
 2. Search for the product
 3. Filter for used or refurbished condition only
@@ -33,8 +33,6 @@ The task must instruct the browser to efficently and as quickly as possible:
 6. Open the FIRST listing in the results that has a valid URL and price
 7. Extract: exact title, listed price, seller location, the image url of the cover item, and the direct URL of that listing page
 8. Stop immediately as soon as you have extracted the data — do NOT open or check any other listings
-
-Make no mistakes. Work faster. Work faster. Minimize actions.
 
 Do NOT browse multiple listings. Return as soon as you have a valid result from the first listing.
 
@@ -119,6 +117,7 @@ async def scrape_site(
         result = await browser_client.run(task, schema=ScrapedListing, model="gemini-3-flash")
         listing = result.output
         if listing:
+            logging.info(listing)
             return {
                 "title": listing.title,
                 "price": listing.price,
