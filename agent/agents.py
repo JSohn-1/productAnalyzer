@@ -80,6 +80,7 @@ class RawListing(Model):
     price: str
     location: str
     url: str
+    image_url: str
     source: str
 
 
@@ -116,20 +117,26 @@ class ScrapedListing(PydanticBaseModel):
 TASK_GEN_PROMPT = """\
 Write a concise browser automation task to find a used or refurbished product on {platform}.
 
-Product: {product}
-Location: {location}
-{price_clause}
-
 The task must instruct the browser to:
-1. Go to {start_url}
-2. Search for the product
-3. Filter for used or refurbished condition only
-4. Filter results to listings near "{location}" only
-5. Apply a max price filter if a budget was specified
-6. Open the FIRST listing in the results that has a valid URL and price
-7. Extract: exact title, listed price, seller location, the url of the first image of the item, and the direct URL of that listing page
-8. Stop immediately as soon as you have extracted the data — do NOT open or check any other listings
+Go to {start_url}.
+Type "{product}" in the search bar and submit.
+Click the filter labeled "Used" or "Refurbished".
+Set location filter to "{location}".
+Set max price to {price_clause}.
 
+Wait until results are visible.
+Click the FIRST result in the list without inspecting others.
+
+On the listing page:
+Extract:
+- title (exact text)
+- price (numeric)
+- seller location (text)
+- first image URL (src)
+- page URL
+
+Return immediately after extraction.
+Do not scroll, do not open additional listings, do not re-check results.
 Do NOT browse multiple listings. Return as soon as you have a valid result from the first listing.
 
 Output ONLY the task instruction as plain text. No explanation, no JSON, no markdown.
