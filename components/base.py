@@ -1,5 +1,7 @@
 import streamlit as st
 import httpx
+import threading
+import time
 
 AGENT_URL = "http://localhost:8001/search"
 
@@ -14,6 +16,15 @@ def load_css():
         st.warning("Could not load style.css")
 
 
+STATUS_URL = "http://localhost:8001/status"
+
+SCRAPER_STATUS_URLS = {
+    "eBay": "http://localhost:8002/status",
+    "FaceBook Marketplace": "http://localhost:8003/status",
+    "Offerup": "http://localhost:8004/status",
+}
+
+
 def search_products(query: str):
     try:
         response = httpx.post(AGENT_URL, json={"query": query}, timeout=300.0)
@@ -24,6 +35,32 @@ def search_products(query: str):
     except Exception as e:
         st.error(f"Agent error: {e}")
         return None
+
+
+def get_status() -> dict | None:
+    try:
+        response = httpx.get(STATUS_URL, timeout=3.0)
+        response.raise_for_status()
+        return response.json()
+    except Exception:
+        return None
+
+
+def get_scraper_statuses() -> dict[str, str]:
+    statuses = {}
+    for platform, url in SCRAPER_STATUS_URLS.items():
+        try:
+            r = httpx.get(url, timeout=2.0)
+            r.raise_for_status()
+            statuses[platform] = r.json().get("message", "...")
+        except Exception:
+            statuses[platform] = "not reachable"
+    return statuses
+
+
+def search_in_background(query: str, container: dict):
+    container["result"] = search_products(query)
+    container["done"] = True
 
 
 def render_results(results):
@@ -123,6 +160,48 @@ def run():
                 st.write("**Generating search tasks** with ASI:One...")
                 st.write("**Scraping** eBay, OfferUp, and Facebook Marketplace in parallel (this takes ~1-2 min)...")
                 data = search_products(st.session_state.pending_query)
+                phase_placeholder = st.empty()
+                platforms_placeholder = st.empty()
+
+                result_container: dict = {"result": None, "done": False}
+                t = threading.Thread(
+                    target=search_in_background,
+                    args=(st.session_state.pending_query, result_container),
+                    daemon=True,
+                )
+                t.start()
+
+                while not result_container["done"]:
+                    s = get_status()
+                    scraper_statuses = get_scraper_statuses()
+                    if s:
+                        phase_placeholder.markdown(f"**{s['message']}**")
+                        rows = []
+                        for p, agent_msg in scraper_statuses.items():
+                            if p in s.get("platforms_done", []):
+                                icon = "✅"
+                                rows.append(f"{icon} **{p}** — {agent_msg}")
+                            elif p in s.get("platforms_failed", []):
+                                icon = "❌"
+                                # Find the specific error message for this platform
+                                error = next(
+                                    (e.split(": ", 1)[1] for e in s.get("platform_errors", []) if e.startswith(f"{p}:")),
+                                    agent_msg,
+                                )
+                                rows.append(f"{icon} **{p}** — {error}")
+                            elif p in s.get("platforms_started", []):
+                                icon = "🔍"
+                                rows.append(f"{icon} **{p}** — {agent_msg}")
+                            else:
+                                rows.append(f"⏳ **{p}** — waiting...")
+                        if rows:
+                            platforms_placeholder.markdown("  \n".join(rows))
+                    else:
+                        phase_placeholder.markdown("*Connecting to orchestrator...*")
+                    time.sleep(1)
+
+                t.join()
+                data = result_container["result"]
 
                 if data is None:
                     status.update(
