@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from typing import List
 from uuid import uuid4
+import asyncio
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -91,6 +92,8 @@ The task must instruct the browser to:
 6. Open the best matching listing closest to "{location}"
 7. Extract: exact title, listed price, seller location, and the direct URL of that listing page
 
+The task must instruct to minimize the time needed. Only look at 3 items most, then pick the best of those options. Take no motre than 30 seconds.
+
 Output ONLY the task instruction as plain text. No explanation, no JSON, no markdown.
 """
 
@@ -162,6 +165,8 @@ Use real filtered search URLs: eBay with LH_ItemCondition=3000, Craigslist with 
 
 PLATFORMS = [
     ("eBay", "https://www.ebay.com"),
+    ("FaceBook Marketplace", "https://www.facebook.com/marketplace"),
+    ("Offerup", "https://offerup.com/"),
 ]
 
 
@@ -218,12 +223,18 @@ async def scrape_and_score(query: str) -> SearchResponse:
     product_match = re.search(r'looking for a used (.+?)(?:\s+with|\s+near|\.|$)', query)
     product = product_match.group(1).strip() if product_match else query
 
-    # Scrape platforms sequentially to avoid concurrent session limits
+    # Scrape platforms concurrently, limited to 3 at a time
     listings = []
-    for platform, start_url in PLATFORMS:
-        result = await scrape_site(platform, start_url, product, location, max_price)
-        if result is not None:
-            listings.append(result)
+    semaphore = asyncio.Semaphore(3)
+
+    async def scrape_with_limit(platform, start_url):
+        async with semaphore:
+            result = await scrape_site(platform, start_url, product, location, max_price)
+            if result is not None:
+                listings.append(result)
+
+    tasks = [asyncio.create_task(scrape_with_limit(platform, start_url)) for platform, start_url in PLATFORMS]
+    await asyncio.gather(*tasks)
 
     if not listings:
         logger.warning("All scrapes failed — using fallback AI generation")
