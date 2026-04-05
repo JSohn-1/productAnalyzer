@@ -75,10 +75,11 @@ def render_results(results):
             carbon = item.get("carbon_saved", "")
             badge = f'<div class="carbon-badge">Carbon Saved: {carbon}</div>' if carbon else ""
             link = f'href="{url}" target="_blank"' if url else ""
+            img_tag = f'<div class="product-image"><img src="{img_url}" style="width: 100%; height: auto; max-height: 250px; object-fit: cover; border-radius: 8px; display: block;"></div>' if img_url else ""
             st.markdown(f'''
                 <div class="glass" style="margin-bottom: 20px;">
                     {badge}
-                    <div class="product-image"><img src={img_url} style="width: 100%; height: auto; max-height: 250px; object-fit: cover; border-radius: 8px; display: block;"></div>
+                    {img_tag}
                     <div class="product-title">{item["title"]}</div>
                     <div class="product-detail">Location: {item["location"]}</div>
                     <div class="product-detail">Source: {item["source"]}</div>
@@ -111,7 +112,7 @@ def run():
 
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+                st.markdown(msg["content"].replace("$", "&#36;"))
 
         with st.form("search_form", clear_on_submit=False):
             product = st.text_input("Product", placeholder="e.g. 4K monitor, bicycle, sofa")
