@@ -78,15 +78,18 @@ class ScrapedListing(BaseModel):
 TASK_GEN_PROMPT = """\
 Write a concise browser automation task to find a used or refurbished product on {platform}.
 
-User request: "{query}"{price_clause}
+Product: {product}
+Location: {location}
+{price_clause}
 
 The task must instruct the browser to:
 1. Go to {start_url}
 2. Search for the product
 3. Filter for used or refurbished condition only
-4. Apply a max price filter if a budget was specified
-5. Open the best matching listing
-6. Extract: exact title, listed price, seller location, and the direct URL of that listing page
+4. Filter results to listings near "{location}" only
+5. Apply a max price filter if a budget was specified
+6. Open the best matching listing closest to "{location}"
+7. Extract: exact title, listed price, seller location, and the direct URL of that listing page
 
 Output ONLY the task instruction as plain text. No explanation, no JSON, no markdown.
 """
@@ -162,8 +165,8 @@ PLATFORMS = [
 ]
 
 
-async def scrape_site(platform: str, start_url: str, query: str, max_price: str) -> dict | None:
-    price_clause = f"\nBudget: under ${max_price}." if max_price else ""
+async def scrape_site(platform: str, start_url: str, product: str, location: str, max_price: str) -> dict | None:
+    price_clause = f"Max price: ${max_price}" if max_price else "No price limit specified."
 
     # Step 1: ASI:One generates the browser task
     r = await asi_client.chat.completions.create(
@@ -171,7 +174,8 @@ async def scrape_site(platform: str, start_url: str, query: str, max_price: str)
         messages=[{"role": "user", "content": TASK_GEN_PROMPT.format(
             platform=platform,
             start_url=start_url,
-            query=query,
+            product=product,
+            location=location,
             price_clause=price_clause,
         )}],
         max_tokens=300,
@@ -208,10 +212,16 @@ async def scrape_and_score(query: str) -> SearchResponse:
     price_match = re.search(r'\$(\d+)', query) or re.search(r'budget of \$?(\d+)', query)
     max_price = price_match.group(1) if price_match else ""
 
+    location_match = re.search(r'near (.+?)(?:\.|$)', query)
+    location = location_match.group(1).strip() if location_match else "United States"
+
+    product_match = re.search(r'looking for a used (.+?)(?:\s+with|\s+near|\.|$)', query)
+    product = product_match.group(1).strip() if product_match else query
+
     # Scrape platforms sequentially to avoid concurrent session limits
     listings = []
     for platform, start_url in PLATFORMS:
-        result = await scrape_site(platform, start_url, query, max_price)
+        result = await scrape_site(platform, start_url, product, location, max_price)
         if result is not None:
             listings.append(result)
 
